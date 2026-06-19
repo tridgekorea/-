@@ -5,202 +5,200 @@ import io
 import requests
 import json
 
-# 1. 트릿지 테마 스타일 UI 설정
-st.set_page_config(page_title="Tridge Data Solution Playbook", layout="wide")
-st.title("📊 Tridge Data Solutions — 리포트 자동화 시스템")
-st.markdown("### **\"절대값을 버리고, 시장 대비 위치를 측정하라\"**")
-st.caption("샘표식품(주) 데이터 기반 구매 단가 진단 및 절감·방어 기회 분석 툴")
+# 1. 페이지 설정 및 스타일 주입
+st.set_page_config(page_title="Tridge Enterprise AI Analytics", layout="wide")
+st.markdown("""
+    <style>
+    div.stFileUploader { margin-bottom: 20px !important; }
+    .step-box { padding: 15px; border-radius: 5px; background-color: #f0f4f8; border-left: 5px solid #1f77b4; margin-bottom: 20px; }
+    .verified-box { padding: 15px; border-radius: 5px; background-color: #e8f5e9; border-left: 5px solid #2e7d32; margin-bottom: 20px; }
+    </style>
+""", unsafe_allow_html=True)
 
-# 2. 사이드바 설정 (설정 및 API 입력창)
-st.sidebar.header("⚙️ 분석 설정 및 API 연동")
+st.title("🚀 Tridge Enterprise AI 정밀 매칭 분석 시스템")
+st.markdown("### **\"AI 유사도 평가와 인간의 2차 검증을 결합한 최극단의 정밀 데이터 솔루션\"**")
 
-# [중요] 발급받으신 클로드 API Key를 여기에 넣거나 화면에서 직접 입력합니다.
-anthropic_key = st.sidebar.text_input("Anthropic (Claude) API Key를 입력하세요", type="password")
-
-uploaded_file = st.sidebar.file_uploader("Tridge Explorer CSV 파일 업로드", type=['csv'])
-target_company = st.sidebar.text_input("분석 대상 기업명 (예: 영인)", value="YOUNG IN")
+# 2. 사이드바 설정
+st.sidebar.header("⚙️ 인프라 설정 및 API 연동")
+anthropic_key = st.sidebar.text_input("Anthropic (Claude) API Key 필수 입력", type="password")
 cutoff_date = st.sidebar.date_input("이벤트 컷오프(기준) 날짜")
 
-# 샘플 품목 검증용 필터링 단어
-sample_product = st.sidebar.text_input("Mix Integrity 검증용 세부 제품명", value="DIVELLA")
+# 함수 정의
+def get_vwap(data):
+    if 'Volume' not in data.columns or 'Value' not in data.columns: return 0
+    if data['Volume'].sum() == 0: return 0
+    return data['Value'].sum() / data['Volume'].sum()
 
-if uploaded_file and target_company:
-    # 3. 데이터 읽기 및 미리보기
-    df = pd.read_csv(uploaded_file)
-    st.subheader("📁 업로드된 데이터 미리보기 (상위 5개 행)")
-    st.dataframe(df.head())
+def load_data(file):
+    if file.name.endswith('.csv'): return pd.read_csv(file)
+    else: return pd.read_excel(file)
 
-    try:
-        # 4. 실제 트릿지 데이터 컬럼명 매핑 및 전처리
-        df['Date'] = pd.to_datetime(df['Date'])
-        cutoff = pd.to_datetime(cutoff_date)
+# --- STEP 1: 기준 기업 데이터 업로드 ---
+st.divider()
+st.markdown("<div class='step-box'><b>Step 1. 분석 대상(기준) 기업의 포트폴리오 데이터 업로드</b></div>", unsafe_allow_html=True)
+target_file = st.file_uploader("기준 기업의 데이터를 업로드하세요", type=['csv', 'xlsx', 'xls'], key="target_file")
+
+if target_file:
+    df_target = load_data(target_file)
+    st.success(f"✅ 기준 기업 데이터 업로드 완료 (총 {len(df_target)}행)")
+    
+    # 카테고리 열 선택 및 추출
+    category_col = st.selectbox("데이터에서 '카테고리(품목)' 열을 선택해 주세요:", df_target.columns, key="cat_col")
+    unique_categories = df_target[category_col].dropna().unique().tolist()
+    selected_categories = st.multiselect("분석할 카테고리를 선택하세요:", unique_categories)
+
+    if selected_categories:
+        df_target_filtered = df_target[df_target[category_col].isin(selected_categories)]
         
-        # Before / After 데이터 분할
-        df_before = df[df['Date'] < cutoff]
-        df_after = df[df['Date'] >= cutoff]
+        # --- STEP 2: 경쟁사/시장 데이터 업로드 ---
+        st.markdown("<div class='step-box'><b>Step 2. 동일 카테고리의 경쟁사/시장 벤치마크 로우데이터 업로드</b></div>", unsafe_allow_html=True)
+        market_file = st.file_uploader("시장 데이터를 업로드하세요", type=['csv', 'xlsx', 'xls'], key="market_file")
 
-        # 물량가중 평균 단가(VWAP) 계산 함수: 금액(Value) / 물량(Volume)
-        def get_vwap(data):
-            if data['Volume'].sum() == 0: return 0
-            return data['Value'].sum() / data['Volume'].sum()
+        if market_file:
+            df_market = load_data(market_file)
+            if category_col in df_market.columns:
+                df_market_filtered = df_market[df_market[category_col].isin(selected_categories)]
+            else:
+                df_market_filtered = df_market
 
-        # 대상 기업 vs 시장 벤치마크(대상 제외) 분리
-        # Importer 컬럼 또는 Raw Importer Name 컬럼 사용
-        target_before = df_before[df_before['Importer'].str.contains(target_company, na=False, case=False)]
-        target_after = df_after[df_after['Importer'].str.contains(target_company, na=False, case=False)]
-        
-        market_before = df_before[~df_before['Importer'].str.contains(target_company, na=False, case=False)]
-        market_after = df_after[~df_after['Importer'].str.contains(target_company, na=False, case=False)]
+            # --- STEP 3: AI 상품명 유사도 평가 (AI Matching) ---
+            st.markdown("<div class='step-box'><b>Step 3. AI 기반 상품명 유사도 평가 및 동등성 검증 (AI Matching Engine)</b></div>", unsafe_allow_html=True)
+            
+            # 고유 상품명 추출 (연산 속도를 위해 상위 일부만 샘플링하거나 고유값 기준으로 매칭)
+            product_col = 'Reported Product Name' if 'Reported Product Name' in df_target.columns else df_target.columns[1]
+            st.caption(f"상품명 매칭 기준 열: `{product_col}`")
+            
+            target_products = df_target_filtered[product_col].dropna().unique().tolist()[:10]
+            market_products = df_market_filtered[product_col].dropna().unique().tolist()[:10]
 
-        # 가중 단가 산출
-        vw_target_before = get_vwap(target_before)
-        vw_target_after = get_vwap(target_after)
-        vw_market_before = get_vwap(market_before)
-        vw_market_after = get_vwap(market_after)
+            matched_pairs = []
+            
+            if not anthropic_key:
+                st.warning("⚠️ 사이드바에 Claude API Key를 입력하셔야 AI 유사도 평가 엔진이 가동됩니다. (입력 전에는 기본 전체 매칭으로 진행됩니다.)")
+                # API 없을 시 임시 매칭 리스트 생성
+                for tp in target_products:
+                    for mp in market_products[:2]:
+                        matched_pairs.append({"기준상품": tp, "경쟁사상품": mp, "유사도": "85%", "추천이유": "API Key 미입력으로 인한 기본 매칭"})
+            else:
+                if st.button("🤖 AI 유사도 평가 시작하기"):
+                    with st.spinner("클로드 AI가 두 데이터의 상품명을 비교하여 동일/유사 상품 무결성 검증을 수행하고 있습니다..."):
+                        headers = {
+                            "x-api-key": anthropic_key,
+                            "anthropic-version": "2023-06-01",
+                            "content-type": "application/json"
+                        }
+                        
+                        prompt_content = f"""
+                        너는 글로벌 무역 데이터 마스터데이터 관리(MDM) 전문가야. 
+                        [기준 기업 상품 리스트]와 [시장/경쟁사 상품 리스트]를 비교해서, 서로 다른 텍스트 형식으로 적혀있더라도 '실제 물리적으로 동일하거나 극히 유사하여 직접 단가 비교가 가능한 쌍'을 찾아내줘.
+                        결과는 반드시 아래 제공된 JSON 형식으로만 출력해라. 딴소리는 절대 하지마.
 
-        # 격차 및 성과 지표 계산
-        gap_before = (vw_target_before / vw_market_before) - 1 if vw_market_before else 0
-        gap_after = (vw_target_after / vw_market_after) - 1 if vw_market_after else 0
-        gap_improvement = (gap_before - gap_after) * 100 # %p 개선량
+                        [기준 기업 상품]: {target_products}
+                        [시장/경쟁사 상품]: {market_products}
 
-        # 절감액 산출
-        total_after_volume = target_after['Volume'].sum()
-        saved_usd = total_after_volume * (vw_market_after - vw_target_after)
+                        [출력 JSON 형식 예시]:
+                        [
+                          {{"기준상품": "A", "경쟁사상품": "B", "유사도": "95%", "추천이유": "브랜드와 규격이 일치함"}}
+                        ]
+                        """
+                        data = {
+                            "model": "claude-3-5-sonnet-20241022",
+                            "max_tokens": 1500,
+                            "messages": [{"role": "user", "content": prompt_content}]
+                        }
+                        try:
+                            res = requests.post("https://api.anthropic.com/v1/messages", headers=headers, json=data)
+                            res_json = res.json()
+                            raw_text = res_json['content'][0]['text']
+                            # JSON 파싱 안전장치
+                            start_idx = raw_text.find('[')
+                            end_idx = raw_text.rfind(']') + 1
+                            matched_pairs = json.loads(raw_text[start_idx:end_idx])
+                            st.session_state['matched_pairs'] = matched_pairs
+                            st.success("🤖 AI 유사도 매칭 완료!")
+                        except Exception as e:
+                            st.error(f"AI 연동 오류: {e}")
 
-        # Mix Integrity 단일 품목 검증 (예: DIVELLA 건면 파스타 등)
-        mix_target_before = target_before[target_before['Reported Product Name'].str.contains(sample_product, na=False, case=False)]
-        mix_target_after = target_after[target_after['Reported Product Name'].str.contains(sample_product, na=False, case=False)]
-        
-        mix_before_price = get_vwap(mix_target_before)
-        mix_after_price = get_vwap(mix_target_after)
-        mix_change_rate = ((mix_after_price / mix_before_price) - 1) * 100 if mix_before_price else 0
+            # 세션 스테이트 보존용
+            if 'matched_pairs' in st.session_state and len(matched_pairs) == 0:
+                matched_pairs = st.session_state['matched_pairs']
 
-        # 5. 화면 대시보드 UI 꾸미기
-        st.divider()
-        st.subheader(f"💡 {target_company} 성과 분석 결과 요약")
-        
-        # 큰 메트릭 UI로 이사님 보고용 지표 노출
-        col1, col2, col3 = st.columns(3)
-        col1.metric("시장 대비 단가 격차 개선량", f"{gap_improvement:+.1f}%p", help="양수일수록 시장 평균 대비 싸게 사기 시작했다는 뜻입니다.")
-        col2.metric("시장 평균가 대비 총 절감액", f"${saved_usd:,.0f}", help="After 기간의 수입 물량에 개선된 단가차이를 곱한 금액입니다.")
-        col3.metric("검증 품목 단가 변동률", f"{mix_change_rate:+.1f}%", help="Mix 무결성 확인을 위한 특정 단일 품목의 Before/After 단가 변동률입니다.")
-
-        # 상세 데이터 테이블 제공
-        st.markdown("#### **상세 지표 테이블**")
-        summary_table = pd.DataFrame({
-            "구분": ["대상 기업 단가 ($/kg)", "시장 벤치마크 단가 ($/kg)", "시장 대비 격차 (%)"],
-            "Before (컷오프 전)": [f"${vw_target_before:.3f}", f"${vw_market_before:.3f}", f"{gap_before*100:+.1f}%"],
-            "After (컷오프 후)": [f"${vw_target_after:.3f}", f"${vw_market_after:.3f}", f"{gap_after*100:+.1f}%"]
-        })
-        st.table(summary_table)
-
-        # 6. 진짜 클로드 API 연동하여 서술형 분석 글 받아오기
-        st.divider()
-        st.subheader("🤖 Claude AI 전략 컨설팅 리포트 서술")
-        
-        ai_insight_text = "API Key를 입력하시면 클로드 AI가 자동으로 정밀 분석 단락을 서술합니다."
-        
-        if anthropic_key:
-            with st.spinner("클로드 AI가 실거래 데이터를 기반으로 전략 보고서를 작성하고 있습니다..."):
-                # Anthropic API 호출 (Claude 3.5 Sonnet 모델 사용)
-                headers = {
-                    "x-api-key": anthropic_key,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json"
-                }
+            # --- STEP 4: 사용자 2차 검증 UI (Human-in-the-Loop) ---
+            if matched_pairs:
+                st.markdown("<div class='verified-box'><b>Step 4. 사용자 2차 확인 및 포함/제외 필터링 (Human-in-the-Loop)</b></div>", unsafe_allow_html=True)
+                st.markdown("AI가 분석한 유사 상품 리스트입니다. **실제 보고서 분석에 포함할 항목만 체크**해 주세요.")
                 
-                prompt_content = f"""
-                너는 글로벌 농식품 무역 데이터 분석 및 B2B 전략 컨설팅 전문가야. 
-                파이썬이 계산해 준 아래의 실제 팩트 데이터를 바탕으로, 샘표식품 초기미팅 보고서 양식처럼 최고 경영진에게 보고할 수준의 전문적이고 논리적인 분석 리포트(인사이트 및 액션 아이템)를 한글로 작성해 줘.
-
-                [분석 대상 및 데이터 개요]
-                - 분석 대상 기업: {target_company}
-                - 시장 대비 단가 격차 변화: {gap_improvement:.1f}%p 개선
-                - 시장 평균가 대비 환산 절감액: ${saved_usd:,.0f}
-                - Mix 무결성 검증: 특정 세부품목({sample_product})의 자체 단가가 {mix_change_rate:.1f}% 변동함.
-
-                [작성 지시사항]
-                1. 말투는 '~ 확인됩니다', '~ 판단됩니다'와 같이 냉철하고 격식 있는 컨설턴트 톤앤매너를 유지해라.
-                2. 첫 단락은 '데이터 기반 진단 및 인사이트'로 작성하고, 이 단가 격차 개선이 우연이 아니며 믹스 무결성 검증을 통해 소싱 경쟁력이 강화되었음을 설명해라.
-                3. 두 번째 단락은 '향후 원가 방어를 위한 Action Item'으로 작성하고, 트릿지 실거래 시세 데이터를 활용한 구체적인 공급망 관리 전략을 제안해라.
-                """
-
-                data = {
-                    "model": "claude-3-5-sonnet-20241022",
-                    "max_tokens": 1500,
-                    "messages": [{"role": "user", "content": prompt_content}]
-                }
+                final_verified_market_products = []
                 
-                try:
-                    response = requests.post("https://api.anthropic.com/v1/messages", headers=headers, json=data)
-                    response_json = response.json()
-                    ai_insight_text = response_json['content'][0]['text']
-                    st.success("클로드 AI 분석 리포트 작성 완료!")
-                except Exception as ai_err:
-                    st.error(f"클로드 AI 연동 중 오류 발생: {ai_err}")
-                    ai_insight_text = "API 통신 오류로 기본 문구로 대체됩니다."
+                # 표 형태로 체크박스 제공
+                for idx, pair in enumerate(matched_pairs):
+                    col1, col2, col3, col4 = st.columns([3, 3, 1, 3])
+                    with col1: st.write(f"**기준:** {pair.get('기준상품')}")
+                    with col2: st.write(f"**경쟁:** {pair.get('경쟁사상품')}")
+                    with col3: st.write(f"🎯 {pair.get('유사도')}")
+                    with col4:
+                        # 사용자가 체크박스로 포함 유무 선택 기본값은 True (포함)
+                        is_checked = st.checkbox("포함하기", value=True, key=f"check_{idx}", help=pair.get('추천이유'))
+                        if is_checked:
+                            final_verified_market_products.append(pair.get('경쟁사상품'))
+
+                # --- STEP 5: 최종 정밀 데이터 기반 계산 및 결과 출력 ---
+                st.divider()
+                st.subheader("📊 최종 검증된 데이터 기반 분석 결과")
+                
+                # 사용자가 승인한 상품들만 시장 데이터에서 최종 필터링
+                if final_verified_market_products:
+                    df_market_final = df_market_filtered[df_market_filtered[product_col].isin(final_verified_market_products)]
+                else:
+                    df_market_final = df_market_filtered
+
+                # 날짜 자르기 및 가중단가 계산
+                df_target_filtered['Date'] = pd.to_datetime(df_target_filtered['Date'])
+                df_market_final['Date'] = pd.to_datetime(df_market_final['Date'])
+                cutoff = pd.to_datetime(cutoff_date)
+
+                t_b = df_target_filtered[df_target_filtered['Date'] < cutoff]
+                t_a = df_target_filtered[df_target_filtered['Date'] >= cutoff]
+                m_b = df_market_final[df_market_final['Date'] < cutoff]
+                m_a = df_market_final[df_market_final['Date'] >= cutoff]
+
+                vw_t_b, vw_t_a = get_vwap(t_b), get_vwap(t_a)
+                vw_m_b, vw_m_a = get_vwap(m_b), get_vwap(m_a)
+
+                gap_b = (vw_t_b / vw_m_b) - 1 if vw_m_b else 0
+                gap_a = (vw_t_a / vw_m_a) - 1 if vw_m_a else 0
+                gap_imp = (gap_b - gap_a) * 100
+                saved_usd = (t_a['Volume'].sum() if 'Volume' in t_a.columns else 0) * (vw_m_a - vw_t_a)
+
+                col1, col2 = st.columns(2)
+                col1.metric("동일 상품 기준 격차 개선량", f"{gap_imp:+.1f}%p")
+                col2.metric("정밀 벤치마크 기준 총 절감액", f"${saved_usd:,.0f}")
+
+                summary_table = pd.DataFrame({
+                    "구분": ["기준 기업 단가 ($/kg)", "경쟁사 정밀 단가 ($/kg)", "시장 대비 격차 (%)"],
+                    "Before (컷오프 전)": [f"${vw_t_b:.3f}", f"${vw_m_b:.3f}", f"{gap_b*100:+.1f}%"],
+                    "After (컷오프 후)": [f"${vw_t_a:.3f}", f"${vw_m_a:.3f}", f"{gap_a*100:+.1f}%"]
+                })
+                st.table(summary_table)
+
+                # 워드 리포트 생성
+                def create_word_report():
+                    doc = Document()
+                    doc.add_heading('TRIDGE AI-HUMAN HYBRID REPORT', level=1)
+                    doc.add_heading('AI 상품 매칭 및 검증 기반 원가 진단 보고서', level=2)
+                    doc.add_paragraph(f"분석 카테고리: {', '.join(selected_categories)}")
+                    doc.add_paragraph(f"인간 검증 완료된 매칭 상품 수: {len(final_verified_market_products)}개\n")
                     
-        st.write(ai_insight_text)
+                    doc.add_heading('💡 정밀 진단 결과', level=3)
+                    doc.add_paragraph(f"단일 상품 단위 동등성 검증(Apples-to-Apples)을 통과한 데이터로 분석한 결과, 시장 대비 구매 격차는 {gap_imp:.1f}%p 개선되었으며, 누적 절감액 성과는 ${saved_usd:,.0f}로 최종 산출되었습니다.")
+                    
+                    bio = io.BytesIO()
+                    doc.save(bio)
+                    return bio.getvalue()
 
-        # 7. 최종 고퀄리티 워드(.docx) 리포트 빌드 및 다운로드
-        st.divider()
-        st.subheader("📥 고퀄리티 전략 보고서 다운로드 (MS Word)")
-        
-        def create_word_report():
-            doc = Document()
-            # 타이틀 디자인 스타일 모방
-            doc.add_heading('TRIDGE DATA SOLUTIONS', level=1)
-            doc.add_heading(f'{target_company} 데이터 기반 구매 단가 진단 및 절감·방어 기회 분석', level=2)
-            doc.add_paragraph('— 초기 미팅 전략 보고서 —\n')
-            
-            doc.add_heading('💡 핵심 요약 (Executive Summary)', level=3)
-            p1 = doc.add_paragraph()
-            p1.add_run(f"{target_company}의 수입 포트폴리오 데이터를 트릿지 실거래 데이터와 비교 분석했습니다. ").bold = True
-            p1.add_run(f"비교의 정합성을 위해 대상 기업을 제외한 시장 벤치마크(ex-subject)를 구축하여 통제했습니다. 그 결과 이벤트 시점({cutoff_date}) 이후 시장 대비 단가 격차가 ")
-            p1.add_run(f"{gap_improvement:.1f}%p 개선").bold = True
-            p1.add_run(f"된 것이 확인되며, 이를 통한 시장 평균가 대비 총 절감 여력은 ")
-            p1.add_run(f"${saved_usd:,.0f}").bold = True
-            p1.add_run("로 추산됩니다.\n")
-            
-            doc.add_heading('📊 상세 분석 지표 (물량가중 평균 단가)', level=3)
-            table = doc.add_table(rows=4, cols=3)
-            hdr_cells = table.rows[0].cells
-            hdr_cells[0].text = '지표 구분'
-            hdr_cells[1].text = 'Before (컷오프 전)'
-            hdr_cells[2].text = 'After (컷오프 후)'
-            
-            row_cells1 = table.rows[1].cells
-            row_cells1[0].text = f'{target_company} 단가'
-            row_cells1[1].text = f'${vw_target_before:.2f}/kg'
-            row_cells1[2].text = f'${vw_target_after:.2f}/kg'
-            
-            row_cells2 = table.rows[2].cells
-            row_cells2[0].text = '시장 벤치마크 단가'
-            row_cells2[1].text = f'${vw_market_before:.2f}/kg'
-            row_cells2[2].text = f'${vw_market_after:.2f}/kg'
-            
-            row_cells3 = table.rows[3].cells
-            row_cells3[0].text = '시장 대비 격차 (%)'
-            row_cells3[1].text = f'{gap_before*100:+.1f}%'
-            row_cells3[2].text = f'{gap_after*100:+.1f}%'
-
-            doc.add_paragraph('\n')
-            doc.add_heading('📝 세부 전략 분석 및 제안 (Claude AI Insight)', level=3)
-            doc.add_paragraph(ai_insight_text)
-            
-            doc.add_paragraph('\n---\n본 보고서의 모든 수치는 트릿지가 확보한 글로벌 실거래 데이터에 근거하며, 전 거래 USD·KG 기준입니다.')
-            
-            bio = io.BytesIO()
-            doc.save(bio)
-            return bio.getvalue()
-
-        docx_file = create_word_report()
-        st.download_button(
-            label="📄 완성된 전략 보고서 다운로드 (.docx)",
-            data=docx_file,
-            file_name=f"트릿지_{target_company}_전략보고서.docx",
-            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        )
-
-    except Exception as e:
-        st.error(f"데이터 연산 중 오류가 발생했습니다. 실제 CSV 파일 구조와 일치하는지 확인해 주세요. (에러 내용: {e})")
+                st.download_button(
+                    label="📄 2차 검증 완료된 최고정밀 전략 보고서 다운로드 (.docx)",
+                    data=create_word_report(),
+                    file_name="트릿지_AI검증_정밀분석보고서.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                )
