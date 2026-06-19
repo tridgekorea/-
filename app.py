@@ -64,7 +64,6 @@ if target_file:
             # --- STEP 3: AI 상품명 유사도 평가 (AI Matching) ---
             st.markdown("<div class='step-box'><b>Step 3. AI 기반 상품명 유사도 평가 및 동등성 검증 (AI Matching Engine)</b></div>", unsafe_allow_html=True)
             
-            # 고유 상품명 추출 (연산 속도를 위해 상위 일부만 샘플링하거나 고유값 기준으로 매칭)
             product_col = 'Reported Product Name' if 'Reported Product Name' in df_target.columns else df_target.columns[1]
             st.caption(f"상품명 매칭 기준 열: `{product_col}`")
             
@@ -74,14 +73,10 @@ if target_file:
             matched_pairs = []
             
             if not anthropic_key:
-                st.warning("⚠️ 사이드바에 Claude API Key를 입력하셔야 AI 유사도 평가 엔진이 가동됩니다. (입력 전에는 기본 전체 매칭으로 진행됩니다.)")
-                # API 없을 시 임시 매칭 리스트 생성
-                for tp in target_products:
-                    for mp in market_products[:2]:
-                        matched_pairs.append({"기준상품": tp, "경쟁사상품": mp, "유사도": "85%", "추천이유": "API Key 미입력으로 인한 기본 매칭"})
+                st.warning("⚠️ 사이드바에 Claude API Key를 입력하셔야 AI 유사도 평가 엔진이 가동됩니다.")
             else:
                 if st.button("🤖 AI 유사도 평가 시작하기"):
-                    with st.spinner("클로드 AI가 두 데이터의 상품명을 비교하여 동일/유사 상품 무결성 검증을 수행하고 있습니다..."):
+                    with st.spinner("클로드 AI가 두 데이터의 상품명을 비교하여 무결성 검증을 수행하고 있습니다..."):
                         headers = {
                             "x-api-key": anthropic_key,
                             "anthropic-version": "2023-06-01",
@@ -89,17 +84,14 @@ if target_file:
                         }
                         
                         prompt_content = f"""
-                        너는 글로벌 무역 데이터 마스터데이터 관리(MDM) 전문가야. 
-                        [기준 기업 상품 리스트]와 [시장/경쟁사 상품 리스트]를 비교해서, 서로 다른 텍스트 형식으로 적혀있더라도 '실제 물리적으로 동일하거나 극히 유사하여 직접 단가 비교가 가능한 쌍'을 찾아내줘.
-                        결과는 반드시 아래 제공된 JSON 형식으로만 출력해라. 딴소리는 절대 하지마.
+                        너는 데이터 분석가야. 아래 두 리스트를 비교해서 동일하거나 유사한 상품을 매칭해줘.
+                        반드시 아래 JSON 배열 형식으로만 대답해:
+                        [
+                          {{"기준상품": "A", "경쟁사상품": "B", "유사도": "95%", "추천이유": "이유작성"}}
+                        ]
 
                         [기준 기업 상품]: {target_products}
                         [시장/경쟁사 상품]: {market_products}
-
-                        [출력 JSON 형식 예시]:
-                        [
-                          {{"기준상품": "A", "경쟁사상품": "B", "유사도": "95%", "추천이유": "브랜드와 규격이 일치함"}}
-                        ]
                         """
                         data = {
                             "model": "claude-3-5-sonnet-20241022",
@@ -109,50 +101,50 @@ if target_file:
                         try:
                             res = requests.post("https://api.anthropic.com/v1/messages", headers=headers, json=data)
                             res_json = res.json()
-                            raw_text = res_json['content'][0]['text']
-                            # JSON 파싱 안전장치
-                            start_idx = raw_text.find('[')
-                            end_idx = raw_text.rfind(']') + 1
-                            matched_pairs = json.loads(raw_text[start_idx:end_idx])
-                            st.session_state['matched_pairs'] = matched_pairs
-                            st.success("🤖 AI 유사도 매칭 완료!")
+                            
+                            # API 에러 메시지가 있는지 먼저 확인하는 안전장치 추가!!
+                            if 'error' in res_json:
+                                st.error(f"❌ 클로드 API 서버 거절: {res_json['error'].get('message', '알 수 없는 에러')}")
+                                st.info("💡 해결 팁: API Key가 정확한지, Anthropic 계정에 결제 카드 등록 및 크레딧(잔액)이 남아있는지 확인해 주세요.")
+                            else:
+                                raw_text = res_json['content'][0]['text']
+                                start_idx = raw_text.find('[')
+                                end_idx = raw_text.rfind(']') + 1
+                                matched_pairs = json.loads(raw_text[start_idx:end_idx])
+                                st.session_state['matched_pairs'] = matched_pairs
+                                st.success("🤖 AI 유사도 매칭 완료!")
                         except Exception as e:
-                            st.error(f"AI 연동 오류: {e}")
+                            st.error(f"⚠️ 시스템 통신 오류: {e}")
 
-            # 세션 스테이트 보존용
             if 'matched_pairs' in st.session_state and len(matched_pairs) == 0:
                 matched_pairs = st.session_state['matched_pairs']
 
-            # --- STEP 4: 사용자 2차 검증 UI (Human-in-the-Loop) ---
+            # --- STEP 4: 사용자 2차 검증 UI ---
             if matched_pairs:
-                st.markdown("<div class='verified-box'><b>Step 4. 사용자 2차 확인 및 포함/제외 필터링 (Human-in-the-Loop)</b></div>", unsafe_allow_html=True)
-                st.markdown("AI가 분석한 유사 상품 리스트입니다. **실제 보고서 분석에 포함할 항목만 체크**해 주세요.")
+                st.markdown("<div class='verified-box'><b>Step 4. 사용자 2차 확인 (Human-in-the-Loop)</b></div>", unsafe_allow_html=True)
+                st.markdown("AI가 분석한 리스트입니다. **포함할 항목만 체크**해 주세요.")
                 
                 final_verified_market_products = []
                 
-                # 표 형태로 체크박스 제공
                 for idx, pair in enumerate(matched_pairs):
                     col1, col2, col3, col4 = st.columns([3, 3, 1, 3])
                     with col1: st.write(f"**기준:** {pair.get('기준상품')}")
                     with col2: st.write(f"**경쟁:** {pair.get('경쟁사상품')}")
                     with col3: st.write(f"🎯 {pair.get('유사도')}")
                     with col4:
-                        # 사용자가 체크박스로 포함 유무 선택 기본값은 True (포함)
                         is_checked = st.checkbox("포함하기", value=True, key=f"check_{idx}", help=pair.get('추천이유'))
                         if is_checked:
                             final_verified_market_products.append(pair.get('경쟁사상품'))
 
-                # --- STEP 5: 최종 정밀 데이터 기반 계산 및 결과 출력 ---
+                # --- STEP 5: 최종 정밀 계산 ---
                 st.divider()
                 st.subheader("📊 최종 검증된 데이터 기반 분석 결과")
                 
-                # 사용자가 승인한 상품들만 시장 데이터에서 최종 필터링
                 if final_verified_market_products:
                     df_market_final = df_market_filtered[df_market_filtered[product_col].isin(final_verified_market_products)]
                 else:
                     df_market_final = df_market_filtered
 
-                # 날짜 자르기 및 가중단가 계산
                 df_target_filtered['Date'] = pd.to_datetime(df_target_filtered['Date'])
                 df_market_final['Date'] = pd.to_datetime(df_market_final['Date'])
                 cutoff = pd.to_datetime(cutoff_date)
@@ -181,7 +173,6 @@ if target_file:
                 })
                 st.table(summary_table)
 
-                # 워드 리포트 생성
                 def create_word_report():
                     doc = Document()
                     doc.add_heading('TRIDGE AI-HUMAN HYBRID REPORT', level=1)
@@ -190,15 +181,15 @@ if target_file:
                     doc.add_paragraph(f"인간 검증 완료된 매칭 상품 수: {len(final_verified_market_products)}개\n")
                     
                     doc.add_heading('💡 정밀 진단 결과', level=3)
-                    doc.add_paragraph(f"단일 상품 단위 동등성 검증(Apples-to-Apples)을 통과한 데이터로 분석한 결과, 시장 대비 구매 격차는 {gap_imp:.1f}%p 개선되었으며, 누적 절감액 성과는 ${saved_usd:,.0f}로 최종 산출되었습니다.")
+                    doc.add_paragraph(f"시장 대비 구매 격차는 {gap_imp:.1f}%p 개선되었으며, 누적 절감액은 ${saved_usd:,.0f}입니다.")
                     
                     bio = io.BytesIO()
                     doc.save(bio)
                     return bio.getvalue()
 
                 st.download_button(
-                    label="📄 2차 검증 완료된 최고정밀 전략 보고서 다운로드 (.docx)",
+                    label="📄 2차 검증 완료된 최고정밀 전략 보고서 다운로드",
                     data=create_word_report(),
-                    file_name="트릿지_AI검증_정밀분석보고서.docx",
+                    file_name="트릿지_AI검증_보고서.docx",
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                 )
